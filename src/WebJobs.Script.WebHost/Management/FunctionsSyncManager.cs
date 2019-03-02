@@ -57,13 +57,13 @@ namespace Microsoft.Azure.WebJobs.Script.WebHost.Management
 
         public async Task<SyncTriggersResult> TrySyncTriggersAsync(bool checkHash = false)
         {
+            var result = new SyncTriggersResult
+            {
+                Success = true
+            };
+
             try
             {
-                var result = new SyncTriggersResult
-                {
-                    Success = true
-                };
-
                 await _syncSemaphore.WaitAsync();
 
                 var hashBlob = await GetHashBlobAsync();
@@ -96,13 +96,20 @@ namespace Microsoft.Azure.WebJobs.Script.WebHost.Management
                     result.Success = success;
                     result.Error = error;
                 }
-
-                return result;
+            }
+            catch (Exception ex)
+            {
+                // best effort - log error and continue
+                result.Success = false;
+                result.Error = "SyncTriggers operation failed.";
+                _logger.LogError(ex, result.Error);
             }
             finally
             {
                 _syncSemaphore.Release();
             }
+
+            return result;
         }
 
         internal async Task<string> CheckHashAsync(CloudBlockBlob hashBlob, string content)

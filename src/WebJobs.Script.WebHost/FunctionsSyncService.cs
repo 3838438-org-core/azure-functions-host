@@ -16,6 +16,8 @@ namespace Microsoft.Azure.WebJobs.Script.WebHost
     /// </summary>
     public class FunctionsSyncService : IHostedService, IDisposable
     {
+        private readonly IScriptWebHostEnvironment _webHostEnvironment;
+        private readonly IEnvironment _environment;
         private readonly ILogger _logger;
         private readonly IScriptHostManager _scriptHostManager;
         private readonly IPrimaryHostStateProvider _primaryHostStateProvider;
@@ -23,7 +25,7 @@ namespace Microsoft.Azure.WebJobs.Script.WebHost
         private Timer _syncTimer;
         private bool _disposed = false;
 
-        public FunctionsSyncService(ILoggerFactory loggerFactory, IScriptHostManager scriptHostManager, IPrimaryHostStateProvider primaryHostStateProvider, IFunctionsSyncManager functionsSyncManager)
+        public FunctionsSyncService(ILoggerFactory loggerFactory, IScriptHostManager scriptHostManager, IPrimaryHostStateProvider primaryHostStateProvider, IFunctionsSyncManager functionsSyncManager, IScriptWebHostEnvironment webHostEnvironment, IEnvironment environment)
         {
             if (loggerFactory == null)
             {
@@ -35,10 +37,15 @@ namespace Microsoft.Azure.WebJobs.Script.WebHost
             _primaryHostStateProvider = primaryHostStateProvider;
             _functionsSyncManager = functionsSyncManager;
             _logger = loggerFactory.CreateLogger(ScriptConstants.LogCategoryHostGeneral);
+            _webHostEnvironment = webHostEnvironment;
+            _environment = environment;
         }
 
         // exposed for testing
         internal int DueTime { get; set; }
+
+        // exposed for testing
+        internal Timer Timer { get; }
 
         internal bool ShouldSyncTriggers
         {
@@ -49,18 +56,32 @@ namespace Microsoft.Azure.WebJobs.Script.WebHost
             }
         }
 
+        internal bool ShouldStartTimer
+        {
+            get
+            {
+                // only want to do background sync triggers when NOT
+                // in standby mode and not running locally
+                return !_environment.IsCoreToolsEnvironment() &&
+                    !_webHostEnvironment.InStandbyMode && _environment.IsContainerReady();
+            }
+        }
+
         public Task StartAsync(CancellationToken cancellationToken)
         {
-            // create a onetime invocation timer
-            _syncTimer = new Timer(OnSyncTimerTick, cancellationToken, DueTime, Timeout.Infinite);
+            if (ShouldStartTimer)
+            {
+                // create a onetime invocation timer
+                _syncTimer = new Timer(OnSyncTimerTick, cancellationToken, DueTime, Timeout.Infinite);
+            }
 
             return Task.CompletedTask;
         }
 
         public Task StopAsync(CancellationToken cancellationToken)
         {
-            // cancel the timer
-            _syncTimer.Change(Timeout.Infinite, Timeout.Infinite);
+            // cancel the timer if it has been started
+            _syncTimer?.Change(Timeout.Infinite, Timeout.Infinite);
 
             return Task.CompletedTask;
         }

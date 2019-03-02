@@ -21,6 +21,8 @@ namespace Microsoft.Azure.WebJobs.Script.Tests
         private readonly Mock<IScriptHostManager> _mockScriptHostManager;
         private readonly Mock<IPrimaryHostStateProvider> _mockPrimaryHostStateProviderMock;
         private readonly Mock<IFunctionsSyncManager> _mockSyncManager;
+        private readonly Mock<IScriptWebHostEnvironment> _mockWebHostEnvironment;
+        private readonly Mock<IEnvironment> _mockEnvironment;
         private readonly int _testDueTime = 250;
 
         public FunctionsSyncServiceTests()
@@ -37,7 +39,13 @@ namespace Microsoft.Azure.WebJobs.Script.Tests
             _mockScriptHostManager.Setup(p => p.State).Returns(ScriptHostState.Running);
             _mockSyncManager.Setup(p => p.TrySyncTriggersAsync(true)).ReturnsAsync(new SyncTriggersResult { Success = true });
 
-            _syncService = new FunctionsSyncService(loggerFactory, _mockScriptHostManager.Object, _mockPrimaryHostStateProviderMock.Object, _mockSyncManager.Object);
+            _mockWebHostEnvironment = new Mock<IScriptWebHostEnvironment>(MockBehavior.Strict);
+            _mockWebHostEnvironment.SetupGet(p => p.InStandbyMode).Returns(false);
+            _mockEnvironment = new Mock<IEnvironment>(MockBehavior.Strict);
+            _mockEnvironment.Setup(p => p.GetEnvironmentVariable(EnvironmentSettingNames.AzureWebsiteContainerReady)).Returns("1");
+            _mockEnvironment.Setup(p => p.GetEnvironmentVariable(EnvironmentSettingNames.CoreToolsEnvironment)).Returns((string)null);
+
+            _syncService = new FunctionsSyncService(loggerFactory, _mockScriptHostManager.Object, _mockPrimaryHostStateProviderMock.Object, _mockSyncManager.Object, _mockWebHostEnvironment.Object, _mockEnvironment.Object);
             _syncService.DueTime = _testDueTime;
         }
 
@@ -53,6 +61,29 @@ namespace Microsoft.Azure.WebJobs.Script.Tests
             _mockScriptHostManager.Setup(p => p.State).Returns(hostState);
 
             Assert.Equal(expected, _syncService.ShouldSyncTriggers);
+        }
+
+        [Theory]
+        [InlineData(true, true, false)]
+        [InlineData(true, false, false)]
+        [InlineData(false, true, true)]
+        [InlineData(false, false, false)]
+        public void ShouldStartTimer_StandbyMode_ReturnsExpectedResult(bool standbyMode, bool containerReady, bool expected)
+        {
+            _mockWebHostEnvironment.SetupGet(p => p.InStandbyMode).Returns(standbyMode);
+            _mockEnvironment.Setup(p => p.GetEnvironmentVariable(EnvironmentSettingNames.AzureWebsiteContainerReady)).Returns(containerReady ? "1" : null);
+
+            Assert.Equal(expected, _syncService.ShouldStartTimer);
+        }
+
+        [Theory]
+        [InlineData(true, false)]
+        [InlineData(false, true)]
+        public void ShouldStartTimer_LocalEnvironment_ReturnsExpectedResult(bool coreToolsEnvironment, bool expected)
+        {
+            _mockEnvironment.Setup(p => p.GetEnvironmentVariable(EnvironmentSettingNames.CoreToolsEnvironment)).Returns(coreToolsEnvironment ? "1" : null);
+
+            Assert.Equal(expected, _syncService.ShouldStartTimer);
         }
 
         [Fact]
@@ -75,6 +106,34 @@ namespace Microsoft.Azure.WebJobs.Script.Tests
             await _syncService.StartAsync(cts.Token);
             await Task.Delay(2 * _testDueTime);
 
+            _mockSyncManager.Verify(p => p.TrySyncTriggersAsync(true), Times.Never);
+        }
+
+        [Theory]
+        [InlineData(true, true)]
+        [InlineData(true, false)]
+        [InlineData(false, false)]
+        public async Task StartAsync_StandbyMode_DoesNotStartTimer(bool standbyMode, bool containerReady)
+        {
+            _mockWebHostEnvironment.SetupGet(p => p.InStandbyMode).Returns(standbyMode);
+            _mockEnvironment.Setup(p => p.GetEnvironmentVariable(EnvironmentSettingNames.AzureWebsiteContainerReady)).Returns(containerReady ? "1" : null);
+
+            await _syncService.StartAsync(CancellationToken.None);
+            await Task.Delay(2 * _testDueTime);
+
+            Assert.Null(_syncService.Timer);
+            _mockSyncManager.Verify(p => p.TrySyncTriggersAsync(true), Times.Never);
+        }
+
+        [Fact]
+        public async Task StartAsync_LocalEnvironment_DoesNotStartTimer()
+        {
+            _mockEnvironment.Setup(p => p.GetEnvironmentVariable(EnvironmentSettingNames.CoreToolsEnvironment)).Returns("1");
+
+            await _syncService.StartAsync(CancellationToken.None);
+            await Task.Delay(2 * _testDueTime);
+
+            Assert.Null(_syncService.Timer);
             _mockSyncManager.Verify(p => p.TrySyncTriggersAsync(true), Times.Never);
         }
 
